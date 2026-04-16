@@ -1,0 +1,470 @@
+#数据来源：https://www.heywhale.com/home
+
+#先看看有多少数据，字段有没有缺失的
+#大概18万条记录，这个量级做分析是够用的
+
+"""
+SELECT
+    COUNT(customer_id), COUNT(product_id), COUNT(action_date), COUNT(action_id), COUNT(type),
+    COUNT(age_range), COUNT(gender), COUNT(customer_register_date), COUNT(customer_level), COUNT(city_level),
+    COUNT(brand), COUNT(shop_id), COUNT(category), COUNT(product_market_date), COUNT(vender_id),
+    COUNT(fans_number), COUNT(vip_number), COUNT(shop_register_date), COUNT(shop_category), COUNT(shop_score)
+FROM
+    jd_database;
+"""
+
+#有些字段有缺失值，用户年龄分段、城市等级、店铺注册日期这几个字段缺失太多没法用，直接删掉
+
+"""
+SET SQL_SAFE_UPDATES = 0;    
+DELETE FROM jd_database WHERE age_range IS NULL;    
+DELETE FROM jd_database WHERE city_level IS NULL;    
+DELETE FROM jd_database WHERE shop_register_date IS NULL;       
+SET SQL_SAFE_UPDATES = 1;
+"""
+
+#处理重复值，看看有没有完全一样的记录
+#发现3条重复的，customer_id 429158、1085560、1514987 有重复购买记录
+
+"""
+SELECT
+    customer_id
+FROM
+    jd_database
+GROUP BY
+    customer_id, product_id, action_date, action_id, type, age_range, gender,
+    customer_register_date, customer_level, city_level, brand, shop_id, category,
+    product_market_date, vender_id, fans_number, vip_number, shop_register_date, shop_category, shop_score
+HAVING COUNT(*) > 1;
+"""
+
+#得到结果：customer_id：429158、1085560、 1514987
+
+#删掉重复的，去重后数据从183691条变成183688条
+#【业务价值】保证后续分析的准确性，重复数据会导致统计指标偏高
+
+"""
+CREATE TABLE jd_database_new AS    
+SELECT DISTINCT * FROM jd_database;    
+SELECT    
+    COUNT(*)    
+FROM    
+    jd_database    
+UNION ALL    
+SELECT    
+    COUNT(*)    
+FROM    
+    jd_database_new;
+"""
+
+#删除重复值后，数据数量减少为183691、183688
+
+#检查一下有没有异常值，看看年龄、评分这些字段的最大值最小值
+#发现店铺评分有负数，这个不正常，评分不可能是负的，要处理一下
+
+"""
+SELECT
+    MAX(age_range),
+    MIN(age_range),
+    MAX(customer_level),
+    MIN(customer_level),
+    MAX(city_level),
+    MIN(city_level),
+    MAX(shop_score),
+    MIN(shop_score)
+FROM
+    jd_database_new;
+"""
+
+#把店铺评分的负数都改成0
+
+"""
+SET SQL_SAFE_UPDATES = 0;    
+UPDATE jd_database_new SET shop_score = 0 WHERE shop_score < 0;    
+SET SQL_SAFE_UPDATES = 1;
+"""
+
+#还要检查一下日期逻辑对不对，比如用户行为日期不能早于注册日期
+#如果有这种矛盾的数据要删掉，不然后面分析时间趋势会出问题
+
+"""
+
+SET SQL_SAFE_UPDATES = 0;    
+DELETE FROM jd_database_new    
+WHERE action_date < customer_register_date    
+   OR action_date < product_market_date    
+   OR action_date < shop_register_date    
+   OR product_market_date < shop_register_date;    
+SET SQL_SAFE_UPDATES = 1;
+
+SET SQL_SAFE_UPDATES = 0;    
+UPDATE jd_database_new    
+SET action_date = DATE_FORMAT(action_date, '%Y-%m-%d');    
+UPDATE jd_database_new    
+SET customer_register_date = DATE_FORMAT(customer_register_date, '%Y-%m-%d');    
+UPDATE jd_database_new    
+SET product_market_date = DATE_FORMAT(product_market_date, '%Y-%m-%d');    
+UPDATE jd_database_new    
+SET shop_register_date = DATE_FORMAT(shop_register_date, '%Y-%m-%d');    
+SET SQL_SAFE_UPDATES = 1;
+
+"""
+
+#用户分布特征分析
+#看看用户都是什么样的人，年龄、性别、会员等级、城市分布大概是什么样的
+
+"""
+SELECT
+    所查询字段名（age_range/gender/customer_level/city_level）,
+    COUNT(*) num,
+    CONCAT(ROUND(COUNT(*) / (SELECT COUNT(*) FROM jd_database_new) * 100, 3), '%') Proportion
+FROM
+    jd_database_new
+GROUP BY 所查询字段名（age_range/gender/customer_level/city_level）
+ORDER BY 所查询字段名（age_range/gender/customer_level/city_level） ASC;
+"""
+
+#用户活跃特征分析（每周PV/UV）
+#按周统计一下浏览量和访客数，看看每周的人均浏览量怎么样
+#PV/UV比值越高说明用户逛得越深，比值低的话可能用户进来就走了
+
+"""
+WITH t1 as (
+SELECT
+    action_date,
+    FLOOR(DATEDIFF(action_date, '2018-02-01') / 7) AS num,
+    COUNT(customer_id) AS pv,
+    COUNT(DISTINCT customer_id) AS uv
+FROM
+    jd_database_new
+GROUP BY action_date
+)
+
+SELECT
+    CONCAT(start_date, ' 至 ', end_date) AS date,
+    PV AS "每周PV",
+    UV AS "每周UV",
+    ROUND(PV / UV, 2) AS "pv/uv"
+FROM (SELECT
+        num,
+DATE_ADD((SELECT MIN(action_date) FROM jd_database_new), INTERVAL (num 7) DAY AS start_date,
+DATE_ADD((SELECT MIN(action_date) FROM jd_database_new), INTERVAL (num * 7 + 6) DAY >
+SELECT MAX(action_date) FROM jd_database_new,
+SELECT MAX(action_date) FROM jd_database_new,
+DATE_ADD((SELECT MIN(action_date) FROM jd_database_new), INTERVAL (num * 7 + 6) DAY) AS end_date,
+        SUM(pv) PV,
+        SUM(uv) UV
+     FROM t1
+     GROUP BY num
+     )t2;
+
+"""
+
+#用户留存率分析
+#看看用户今天来了明天还会不会来，新用户留存率更能反映平台对新用户的吸引力
+
+"""
+
+SELECT
+    ROUND(SUM(IF(t2.date IS NOT NULL, 1, 0)) / COUNT(t1.date), 4) avg_ret
+FROM
+    (SELECT DISTINCT
+        customer_id, action_date date
+    FROM
+        jd_database_new) t1
+LEFT JOIN
+    (SELECT DISTINCT
+        customer_id, DATE_SUB(action_date, INTERVAL 1 DAY) date
+    FROM
+        jd_database_new) t2
+ON t1.customer_id = t2.customer_id AND t1.date = t2.date
+WHERE t1.date < (SELECT MAX(action_date) FROM jd_database_new);
+
+SELECT
+    ROUND(SUM(IF(t2.date IS NOT NULL, 1, 0)) / COUNT(t1.date), 4) new_avg_ret
+FROM
+    (SELECT
+        customer_id, MIN(action_date) date
+    FROM
+        jd_database_new
+    GROUP BY customer_id) t1
+LEFT JOIN
+    (SELECT DISTINCT
+        customer_id, DATE_SUB(action_date, INTERVAL 1 DAY) date
+    FROM
+        jd_database_new) t2
+ON t1.customer_id = t2.customer_id AND t1.date = t2.date
+WHERE t1.date < (SELECT MAX(action_date) FROM jd_database_new);
+
+"""
+
+#购物偏好特征分析
+#看看不同年龄段、性别的人喜欢买什么品类，每个组合列出前三名
+#比如26-30岁女性可能爱买美妆护肤，30岁男性可能爱买3C数码
+
+"""
+SELECT
+    age_range, gender, category, num, CONCAT(round(num / total * 100, 1), "%") proportion
+FROM (
+     SELECT
+         age_range, gender, category, COUNT(*) num,
+         SUM(COUNT(*))OVER(PARTITION BY age_range, gender) total,
+         ROW_NUMBER()OVER(PARTITION BY age_range, gender ORDER BY COUNT(*) DESC) rk
+     FROM jd_database_new
+     WHERE type = 'Order' AND gender IN ('W', 'M')
+     GROUP BY age_range, gender, category    
+     )s1    
+ WHERE rk <= 3    
+ ORDER BY age_range, gender, num DESC;
+"""
+
+#产品品牌偏好分析
+#看看各个品类里用户都买什么品牌，比如手机品类华为和苹果哪个更受欢迎
+
+"""
+SELECT
+    category, brand, num, CONCAT(round(num / total * 100, 1), "%") proportion
+FROM (
+     SELECT
+         category, brand, COUNT(*) num,
+         SUM(COUNT(*))OVER(PARTITION BY category) total,
+         ROW_NUMBER()OVER(PARTITION BY category ORDER BY COUNT(*) DESC) rk
+     FROM jd_database_new
+     WHERE
+         type = 'Order'
+     GROUP BY category, brand
+     )q1
+ WHERE (CASE WHEN rk = 1 and brand = "Other" then rk = 2 ELSE rk = 1 END)
+ ORDER BY num DESC;
+"""
+
+#新品接受度分析
+#看看用户愿不愿意买新上架的产品，30天内新品购买率能反映用户对新品的态度
+
+"""
+SELECT
+    COUNT(DISTINCT customer_id) total_buyers,
+    COUNT(DISTINCT IF(DATEDIFF(action_date, product_market_date) <= 30, customer_id, NULL)) new_priduct_buyers,
+    COUNT(DISTINCT IF(DATEDIFF(action_date, product_market_date) <= 30, customer_id, NULL)) / COUNT(DISTINCT customer_id) rt
+FROM
+    jd_database_new
+WHERE
+type = 'Order';
+"""
+
+#RFM用户分群
+#根据用户的最近购买时间、购买次数、购买多样性，把用户分成8类
+#重要价值用户是又近又频繁又多样的要重点维护，一般挽留用户流失风险大要想办法召回
+
+"""
+WITH w1 AS (
+    SELECT
+        customer_id,
+        DATEDIFF((SELECT MAX(action_date) FROM jd_database_new), MAX(action_date)) AS recency,
+        COUNT(*) AS frequency,
+        COUNT(DISTINCT category) AS monetary_m1,
+        COUNT(DISTINCT type) AS monetary_m2,
+        COUNT(DISTINCT shop_id) AS monetary_m3
+    FROM jd_database_new
+    WHERE type = 'Order'
+    GROUP BY customer_id
+)
+SELECT
+    CASE
+        WHEN r_score >= 4 AND f_score >= 4 AND m_score >= 4 THEN '重要价值用户'
+        WHEN r_score < 4  AND f_score >= 4 AND m_score >= 4 THEN '重要保持用户'
+        WHEN r_score >= 4 AND f_score < 4  AND m_score >= 4 THEN '重要发展用户'
+        WHEN r_score < 4  AND f_score < 4  AND m_score >= 4 THEN '重要挽留用户'
+        WHEN r_score >= 4 AND f_score >= 4 AND m_score < 4  THEN '一般价值用户'
+        WHEN r_score < 4  AND f_score >= 4 AND m_score < 4  THEN '一般保持用户'
+        WHEN r_score >= 4 AND f_score < 4  AND m_score < 4  THEN '一般发展用户'
+        ELSE '一般挽留用户'
+    END AS '用户类型',
+    COUNT(customer_id) AS cnt
+FROM (
+    SELECT
+        customer_id,
+        NTILE(6)OVER(ORDER BY recency DESC) AS r_score,
+        NTILE(6)OVER(ORDER BY frequency) AS f_score,
+        (NTILE(6)OVER(ORDER BY monetary_m1) + NTILE(6)OVER(ORDER BY monetary_m2) + NTILE(6)OVER(ORDER BY monetary_m3)) / 3 AS m_score
+    FROM w1
+    )w2
+GROUP BY 用户类型
+ORDER BY 用户类型;
+""" )
+
+#用户购买转化漏斗分析
+#看看用户从浏览到最后付款，整个过程每一步流失多少
+#结果会显示 浏览->加购->下单->支付 各个环节的人数和转化率
+#可以知道哪个环节问题最大，比如加购很多但下单少，就要去优化购物车页面
+
+"""
+SELECT
+    type,
+    COUNT(*) AS cnt,
+    CONCAT(ROUND(COUNT(*) / LAG(COUNT(*)) OVER (ORDER BY FIELD(type, 'Browse', 'Cart', 'Order', 'Pay')) * 100, 2), '%') AS conversion_rate
+FROM
+    jd_database_new
+WHERE
+    type IN ('Browse', 'Cart', 'Order', 'Pay')
+GROUP BY type
+ORDER BY FIELD(type, 'Browse', 'Cart', 'Order', 'Pay');
+"""
+
+#用户购买周期分析
+#看看用户一般多久来买一次东西，方便知道什么时候该提醒用户回来买东西
+#可以按会员等级看看差异，高级会员是不是购买更频繁
+
+"""
+WITH purchase间隔 AS (
+    SELECT
+        customer_id,
+        action_date,
+        LAG(action_date) OVER (PARTITION BY customer_id ORDER BY action_date) AS last_purchase_date
+    FROM jd_database_new
+    WHERE type = 'Order'
+)
+SELECT
+    AVG(DATEDIFF(action_date, last_purchase_date)) AS avg_purchase_interval,
+    customer_level,
+    COUNT(*) AS cnt
+FROM purchase间隔 t1
+JOIN jd_database_new t2 ON t1.customer_id = t2.customer_id
+WHERE last_purchase_date IS NOT NULL
+GROUP BY customer_level
+ORDER BY avg_purchase_interval;
+"""
+
+#用户价值分层分析
+#按用户的购买次数把用户分成5个等级，看看各等级的分布情况
+#高等级用户虽然人少，但肯定是下单最多的，要重点维护
+
+"""
+WITH user_value AS (
+    SELECT
+        customer_id,
+        COUNT(*) AS order_cnt,
+        COUNT(DISTINCT category) AS category_cnt,
+        NTILE(5) OVER (ORDER BY COUNT(*)) AS value_level
+    FROM jd_database_new
+    WHERE type = 'Order'
+    GROUP BY customer_id
+)
+SELECT
+    CASE value_level
+        WHEN 5 THEN '高价值用户'
+        WHEN 4 THEN '次高价值用户'
+        WHEN 3 THEN '中等价值用户'
+        WHEN 2 THEN '次低价值用户'
+        ELSE '低价值用户'
+    END AS user_level,
+    COUNT(customer_id) AS user_cnt,
+    SUM(order_cnt) AS total_orders,
+    ROUND(AVG(order_cnt), 2) AS avg_orders,
+    CONCAT(ROUND(COUNT(customer_id) / (SELECT COUNT(DISTINCT customer_id) FROM user_value) * 100, 2), '%') AS proportion
+FROM user_value
+GROUP BY value_level
+ORDER BY value_level DESC;
+"""
+
+#复购率分析
+#看看用户买了之后有多大概率会再回来买，30天内复购率大概是什么水平
+#复购率高说明用户认可平台，愿意再来；复购率低就要想办法召回用户了
+
+"""
+WITH first_purchase AS (
+    SELECT
+        customer_id,
+        MIN(action_date) AS first_date
+    FROM jd_database_new
+    WHERE type = 'Order'
+    GROUP BY customer_id
+),
+repeat_purchase AS (
+    SELECT
+        t1.customer_id,
+        t1.first_date,
+        COUNT(DISTINCT t2.action_date) AS repeat_cnt
+    FROM first_purchase t1
+    JOIN jd_database_new t2 ON t1.customer_id = t2.customer_id
+        AND t2.action_date > t1.first_date
+        AND t2.action_date <= DATE_ADD(t1.first_date, INTERVAL 30 DAY)
+    WHERE t2.type = 'Order'
+    GROUP BY t1.customer_id, t1.first_date
+)
+SELECT
+    COUNT(DISTINCT fp.customer_id) AS total_buyers,
+    COUNT(DISTINCT rp.customer_id) AS repeat_buyers,
+    CONCAT(ROUND(COUNT(DISTINCT rp.customer_id) / COUNT(DISTINCT fp.customer_id) * 100, 2), '%') AS repeat_rate_30d
+FROM first_purchase fp
+LEFT JOIN repeat_purchase rp ON fp.customer_id = rp.customer_id;
+"""
+
+#关联品类分析
+#看看哪些品类经常被一起购买，比如买手机的人会不会也买手机壳
+#可以用来做组合促销，或者在用户加购一个商品时推荐另一个
+
+"""
+SELECT
+    t1.category AS category_a,
+    t2.category AS category_b,
+    COUNT(*) AS co_occurrence,
+    COUNT(*) / (SELECT COUNT(DISTINCT customer_id) FROM jd_database_new WHERE type = 'Order') AS support,
+    COUNT(*) / (SELECT COUNT(*) FROM jd_database_new WHERE type = 'Order' AND category = t1.category) AS confidence
+FROM jd_database_new t1
+JOIN jd_database_new t2 ON t1.customer_id = t2.customer_id
+    AND t1.action_date = t2.action_date
+    AND t1.category < t2.category
+WHERE t1.type = 'Order' AND t2.type = 'Order'
+GROUP BY t1.category, t2.category
+HAVING COUNT(*) > 100
+ORDER BY co_occurrence DESC
+LIMIT 20;
+"""
+
+#用户行为路径分析
+#看看用户一般是怎么逛的，从哪个行为跳到哪个行为最多
+#可以发现用户常见的逛法，然后优化那些容易流失的路径
+
+"""
+WITH user_action_sequence AS (
+    SELECT
+        customer_id,
+        action_date,
+        type,
+        LAG(type) OVER (PARTITION BY customer_id ORDER BY action_date, action_id) AS prev_action,
+        LEAD(type) OVER (PARTITION BY customer_id ORDER BY action_date, action_id) AS next_action
+    FROM jd_database_new
+)
+SELECT
+    prev_action,
+    type AS current_action,
+    next_action,
+    COUNT(*) AS cnt
+FROM user_action_sequence
+WHERE prev_action IS NOT NULL AND next_action IS NOT NULL
+GROUP BY prev_action, type, next_action
+ORDER BY cnt DESC
+LIMIT 30;
+"""
+
+#促销活动效果分析
+#对比一下大促期间和平时有什么区别，看看大促是不是真的带来了更多订单
+#周末和工作日也可以对比一下，看要不要在周末多搞活动
+
+"""
+SELECT
+    CASE
+        WHEN DAYOFWEEK(action_date) IN (1, 7) THEN '周末'
+        WHEN MONTH(action_date) IN (11, 12) THEN '大促月'
+        ELSE '普通工作日'
+    END AS period_type,
+    COUNT(DISTINCT customer_id) AS buyers,
+    COUNT(*) AS orders,
+    COUNT(DISTINCT category) AS categories,
+    CONCAT(ROUND(COUNT(*) / COUNT(DISTINCT customer_id), 2), '%') AS avg_orders_per_user
+FROM jd_database_new
+WHERE type = 'Order'
+GROUP BY period_type
+ORDER BY orders DESC;
+"""
