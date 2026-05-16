@@ -1,14 +1,24 @@
 [project]
 name = "data-analysis-main"
 version = "0.1.0"
-description = "Add your description here"
+description = "基于 Python 的数据分析项目集合"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.12",
     "bs4>=0.0.2",
+    "crawl4ai>=0.4",
     "jieba>=0.42.1",
-    "matplotlib>=3.10.8",
-    "numpy>=2.4.2",
-    "pandas>=3.0.1",
-    "seaborn>=0.13.2",
+    "matplotlib>=3.10",
+    "numpy>=2.0",
+    "openpyxl>=3.1",
+    "pandas>=2.2",
+    "pillow>=10.0",
+    "pyecharts>=2.0",
+    "scipy>=1.14",
+    "scikit-learn>=1.5",
+    "seaborn>=0.13",
+    "wordcloud>=1.9",
+    "xgboost>=2.0",
+    "rich>=13.0",
 ]
